@@ -1,7 +1,7 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const axios = require('axios');
-const FormData = require('form-data');
+const fs = require('node:fs');
 
 const app = express();
 app.use(express.json());
@@ -40,61 +40,67 @@ app.post('/', async (request, response) => {
 		}
 		return databaseUser;
 	})();
-	let botMessage = {};
-	const messageType = ['text', 'voice', 'photo', 'video', 'document'].find(type => userMessage[type]);
-	switch (messageType) {
+	const botMessage = {
+		chat_id: chatId,
+		reply_to_message_id: messageId,
+		parse_mode: 'MarkdownV2'
+	};
+	
+	switch (getMessageType(userMessage)) {
 		case 'text':
-            const textCommand = userMessage[messageType].match(/^\/(start|profile|info|image )/);
+            const textCommand = userMessage.text.match(/^\/(start|profile|info|credit|image )/);
 			if (textCommand) {
-				botMessage.reply = true;
-				const words = userMessage[messageType].split(' ');
+				
+				const words = userMessage.text.split(' ');
 				switch (textCommand[0]) {
 					case '\/start':
-						botMessage.type = 'text';
-						botMessage.content = 'start';
+						botMessage.text = 'start';
+						
 						break;
 					case '\/profile':
-						botMessage.type = 'text';
-						botMessage.content = `🪪 *ID:* \`${user.userId}\`\n👤 *NAME:* \`${userName}\`\n💰 *CREDIT:* ${user.credit}`;
+						botMessage.text = `🪪 *ID:* \`${user.userId}\`\n👤 *NAME:* \`${userName}\`\n💰 *CREDIT:* ${user.credit}`;
 						break;
 					case '\/info':
-						botMessage.type = 'text';
-						botMessage.content = 'info';
+						
+						botMessage.text = 'info';
+						break;
+					case '\/credit':
+						await sendTelegramAction(chatId, 'typing');
+						botMessage.text = fs.readFileSync('./files/credit.txt', 'utf-8');
 						break;
 					case '\/image ':
 						if (user.credit >= 3) {
 							if (words.length >= 4) {
 								await sendTelegramAction(chatId, 'upload_photo');
-								const imageCompletion = await createImage(userMessage[messageType].replace('/image ', ''));
+								const imageCompletion = await createImage(userMessage.text.replace('/image ', ''));
 								if (imageCompletion?.data && Array.isArray(imageCompletion.data)) {
-									botMessage.type = 'image';
-									botMessage.content = imageCompletion.data[0].url;
+									
+									botMessage.photo = imageCompletion.data[0].url;
+									botMessage.caption = 'Powered by: \`DALL-E\`';
 									await aiqueryDB.collection('users').updateOne(
 										{ userId: user.userId, credit: { $gte: 3 } },
 										{ $inc: { credit: -3 } }
 									);
 								} else {
-									botMessage.type = 'text';
-									botMessage.content = JSON.stringify(imageCompletion);
+									
+									botMessage.text = JSON.stringify(imageCompletion);
 								}
 							} else {
-								botMessage.type = 'text';
-								botMessage.content = 'Error: You need to define at least 3 words for describing image.';
+								
+								botMessage.text = 'Error: You need to define at least 3 words for describing image.';
 							}
 						} else {
-							botMessage.type = 'text';
+							
 							botMessage.content = 'Sorry! But you don\'t have enough credit to perform that request. You need 3 credit for every image request.';
 						}
 						break;
 			    }
 			} else {
-				botMessage.reply = false;
-				botMessage.type = 'text';
 				await sendTelegramAction(chatId, 'typing');
 				if (user.credit > 0) {
 					const messages = [
 						{ "role": "system", "content": "### You are AI QUERY GPT and powered by OpenAI using the latest model GPT-4 also equipped with DALL-E." },
-						{ "role": "user", "content": userMessage[messageType] }
+						{ "role": "user", "content": userMessage.text }
 					];
 					if (userMessage.reply_to_message?.text) {
 						const includedMessage = {
@@ -105,47 +111,27 @@ app.post('/', async (request, response) => {
 					}
 					const chatCompletion = await createChatCompletion(messages);
 					if (chatCompletion?.choices[0]?.message?.content) {
-						botMessage.content = chatCompletion.choices[0].message.content;
+						botMessage.text = chatCompletion.choices[0].message.content;
 						await aiqueryDB.collection('users').updateOne(
 							{ userId: user.userId, credit: { $gt: 0 } },
 							{ $inc: { credit: -1 } }
 						);
 					} else {
-						botMessage.content = JSON.stringify(chatCompletion);
+						botMessage.text = JSON.stringify(chatCompletion);
 					}
 				} else {
-					botMessage.content = 'Sorry! But you don\'t have enough credit to perform that request. You need atleast 1 credit for GPT-4 prompt.';
+					botMessage.text = 'Sorry! But you don\'t have enough credit to perform that request. You need atleast 1 credit for GPT-4 prompt.';
 				}
 			}
 			break;
 		default:
-			botMessage.reply = true;
-			botMessage.type = 'text';
-			botMessage.content = 'Unsupported message type.';
+			botMessage.text = 'Unsupported message type.';
 	}
-	response.status(200).json(await sendTelegramMessage(chatId, messageId, botMessage));
+	response.send(await sendTelegramMessage(botMessage));
 });
 
-async function getTelegramFileData(fileId) {
-	return await executeAxiosRequest({
-		method: 'get',
-		url: `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/getFile`,
-		params: {
-			file_id: fileId
-		}
-	});
-}
-
-async function getTelegramFileBuffer(filePath) {
-	return await executeAxiosRequest({
-		method: 'get',
-		url: `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/${filePath}`,
-		responseType: 'stream'
-	});
-}
-
 async function sendTelegramAction(chatId, action) {
-	return await executeAxiosRequest({
+	const response = await executeAxiosRequest({
 		method: 'post',
 		url: `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/sendChatAction`,
 		data: {
@@ -153,45 +139,36 @@ async function sendTelegramAction(chatId, action) {
 			action: action
 		}
 	});
+	return response.data;
 }
 
-async function sendTelegramMessage(chatId, messageId, message) {
-	let url;
-	const data = {
-		chat_id: chatId,
-	};
-	if (message.reply) {
-		data.reply_to_message_id = messageId;
-	}
-	switch (message.type) {
-		
-		case 'image':
-			url = `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/sendPhoto`;
-			data.photo = message.content;
-			data.caption = 'Powered by \`DALL-E\`';
-			data.parse_mode = 'MarkdownV2';
+async function sendTelegramMessage(message) {
+	let path;
+	switch (getMessageType(message)) {
+		case 'text':
+			path = 'sendMessage';
+			message.text = message.text.replace(/([-_\[\]()~>#+=|{}.!])/g, "\\$1");
+			break;
+		case 'voice':
+			break;
+		case 'photo':
+			path = 'sendPhoto';
 			break;
 		case 'video':
-
 			break;
 		case 'document':
-
-			break;
-		default:
-			url = `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/sendMessage`;
-			data.text = (message.content).replace(/([-_\[\]()~>#+=|{}.!])/g, "\\$1");
-			data.parse_mode = 'MarkdownV2';
 			break;
 	}
-	return await executeAxiosRequest({
+	const response = await executeAxiosRequest({
 		method: 'post',
-		url: url,
-		data: data
+		url: `https://api.telegram.org/bot${process.env.AIQUERY_BOT_TOKEN}/${path}`,
+		data: message
 	});
+	return response.data;
 }
 
 async function createChatCompletion(messages) {
-	return await executeAxiosRequest({
+	const response = await executeAxiosRequest({
 		method: 'post',
 		url: 'https://api.openai.com/v1/chat/completions',
 		headers: {
@@ -205,10 +182,11 @@ async function createChatCompletion(messages) {
 			max_tokens: 1000
 		}
 	});
+	return response.data;
 }
 
 async function createImage(description) {
-	return await executeAxiosRequest({
+	const response = await executeAxiosRequest({
 		method: 'post',
 		url: 'https://api.openai.com/v1/images/generations',
 		headers: {
@@ -221,20 +199,27 @@ async function createImage(description) {
 			size: '1024x1024'
 		}
 	});
+	return response.data;
+}
+
+function getMessageType(message) {
+	return ['text', 'voice', 'photo', 'video', 'document'].find(type => message[type]);
 }
 
 async function executeAxiosRequest(request) {
 	try {
-		response = await axios(request);
-		return response.data;
+	   return await axios(request);
 	} catch (error) {
-		if (error.response) {
-			return error.response.data;
-		} else {
-			return {
-				error: error.message
-			};
-		}
+	   if (error.response) {
+		   return error.response;
+	   } else {
+		   return {
+			   status: 500,
+			   data: {
+				   error: error.message
+			   }
+		   };
+	   }
 	}
 }
 
