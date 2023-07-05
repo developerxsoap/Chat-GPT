@@ -66,7 +66,8 @@ app.post('/', async (request, response) => {
 						break;
 					case '\/credit':
 						await sendTelegramAction(chatId, 'typing');
-						botMessage.text = fs.readFileSync('./files/credit.txt', 'utf-8');
+						botMessage.photo = 'https://raw.githubusercontent.com/developerxsoap/Chat-GPT/main/files/gcash-qr-chat-gpt.jpg';
+						botMessage.caption = fs.readFileSync('./files/credit.txt', 'utf-8');
 						break;
 					case '\/image ':
 						if (user.credit >= 3) {
@@ -153,6 +154,7 @@ async function sendTelegramMessage(message) {
 			break;
 		case 'photo':
 			path = 'sendPhoto';
+			message.caption = message.caption.replace(/([-_\[\]()~>#+=|{}.!])/g, "\\$1");
 			break;
 		case 'video':
 			break;
